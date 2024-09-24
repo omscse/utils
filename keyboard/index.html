@@ -1,0 +1,179 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Bluetooth HID Keyboard</title>
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+        }
+
+        .container {
+            width: 100%;
+            max-width: 400px;
+            padding: 20px;
+            background-color: #fff;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            text-align: center; /* Center text in the container */
+        }
+
+        h1 {
+            margin-bottom: 20px;
+        }
+
+        textarea {
+            width: 80%;
+            height: 100px;
+            padding: 10px;
+            margin-bottom: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            resize: none;
+        }
+
+        button {
+            display: block;
+            width: calc(100% - 20px); /* Adjust width to account for padding */
+            margin-bottom: 10px;
+            padding: 10px;
+            background-color: #28a745;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 16px;
+            cursor: pointer;
+            outline: none;
+        }
+
+        button:hover {
+            background-color: #218838;
+        }
+
+        #status {
+            margin-top: 10px;
+            color: red;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>Bluetooth HID Keyboard</h1>
+        <button id="connectButton">Connect Bluetooth</button>
+        <textarea id="inputText" placeholder="Type characters here..."></textarea>
+        <button id="sendButton">Send to Device</button>
+        <p id="status"></p>
+    </div>
+
+    <script>
+        const connectButton = document.getElementById('connectButton');
+        const sendButton = document.getElementById('sendButton');
+        const inputText = document.getElementById('inputText');
+        const statusText = document.getElementById('status');
+
+        const SERVICE_UUID = '6e400001-b5a3-f393-e0a9-e50e24dcca9e'; // UART service UUID
+        const CHARACTERISTIC_UUID = '6e400002-b5a3-f393-e0a9-e50e24dcca9e'; // TX Characteristic UUID
+        const RX_CHARACTERISTIC_UUID = '6e400003-b5a3-f393-e0a9-e50e24dcca9e'; // RX characteristic UUID
+
+        let bluetoothDevice;
+        let txCharacteristic;
+        let rxCharacteristic;
+
+        async function connectBluetooth() {
+            try {
+                bluetoothDevice = await navigator.bluetooth.requestDevice({
+                    filters: [{ 
+                        services: [SERVICE_UUID]
+                        // name: "BT_KB"
+                        // namePrefix: "M"
+                     }]
+                });
+                const server = await bluetoothDevice.gatt.connect();
+                const service = await server.getPrimaryService(SERVICE_UUID);
+                txCharacteristic = await service.getCharacteristic(CHARACTERISTIC_UUID); // TX
+                rxCharacteristic = await service.getCharacteristic(RX_CHARACTERISTIC_UUID); // RX
+                rxCharacteristic.startNotifications(); // Enable notifications from the device
+                rxCharacteristic.addEventListener('characteristicvaluechanged', handleNotification);
+
+                statusText.textContent = 'Bluetooth device connected';
+            } catch (error) {
+                statusText.textContent = `Connection failed: ${error}`;
+            }
+        }
+
+        async function handleNotification(event) {
+            const value = new TextDecoder().decode(event.target.value);
+            if (value === "ACK") {
+                console.log("Received ACK from device");
+                // Proceed to send the next chunk
+                sendNextChunk();
+            }
+        }
+
+        let chunks = [];
+        let currentChunkIndex = 0;
+
+        async function sendDataWithHeader(functionID, data) {
+            const encoder = new TextEncoder();
+            let encodedData = encoder.encode(data);
+            const maxChunkSize = 19;  // Set this to the maximum BLE packet size minus overhead
+            chunks = [];  // Reset the chunks array
+            let position = 0;
+
+            // Divide data into chunks
+            while (position < encodedData.length) {
+                const chunk = encodedData.slice(position, position + maxChunkSize);
+                chunks.push(new Uint8Array([functionID, ...chunk]));
+                position += maxChunkSize;
+            }
+            currentChunkIndex = 0;
+            await sendNextChunk();
+        }
+
+        async function sendNextChunk() {
+            if (currentChunkIndex < chunks.length) {
+                try {
+                    console.log(`Sending chunk ${currentChunkIndex + 1}/${chunks.length}`);
+                    await txCharacteristic.writeValue(chunks[currentChunkIndex]);
+                    currentChunkIndex++;
+                } catch (error) {
+                    console.error("Error sending chunk:", error);
+                    statusText.textContent = `Error sending chunk: ${error}`;
+                }
+            } else {
+                statusText.textContent = 'Data sent successfully';
+                console.log("All chunks sent");
+            }
+        }
+
+        async function sendText() {
+            const text = inputText.value;
+            if (!bluetoothDevice || !bluetoothDevice.gatt.connected) {
+                statusText.textContent = 'No device connected. Connecting now...';
+                await connectBluetooth();
+            }
+
+            let countdown = 3;
+            const countdownInterval = setInterval(() => {
+                statusText.textContent = `Sending text in ${countdown} seconds...`;
+                countdown--;
+                if (countdown < 0) {
+                    clearInterval(countdownInterval);
+                    sendDataWithHeader(0x01, text);
+                }
+            }, 1000);
+        }
+
+        connectButton.addEventListener('click', connectBluetooth);
+        sendButton.addEventListener('click', sendText);
+    </script>
+</body>
+</html>
